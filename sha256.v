@@ -1,5 +1,5 @@
 /*
-	clk = clock signal
+	clock = clock signal
 	reset = clear input
 	load_enable = start loading input
 	input_complete = input complete
@@ -8,7 +8,7 @@
 	NOTE: Data is inputted left to right and the hash is outputted left to right
 */
 module SHA256 #() (
-	input logic clk, reset, load_enable, input_complete,
+	input logic clock, reset, load_enable, input_complete,
 	input logic[7:0] input_data,
 	output logic[15:0] hashed_data
 );
@@ -20,44 +20,49 @@ module SHA256 #() (
 	
 	// NOTE: we need exactly 512 bits, therefore we will load in 63 times (63 * 8 = 504 bits)
 	//		 so that we can add one and pad (part of SHA256 algorithm)
-	always @(posedge clk or posedge reset) begin
+	always @(posedge clock or posedge reset) begin
 		// If reset, clear the data_storage and counter
 		if (reset) begin
 			data_storage <= 512'b0;
 			counter <= 0;
-		end else if (load_enable && !input_complete && counter < 63) begin
+		end else if (!reset && load_enable && !input_complete && counter < 63) begin
 			data_storage <= {data_storage[503:0], input_data}; // Shift what is currently in the register to the left by 8 and load in next input
 			counter <= counter + 1;
 		end
 	end
 
 	// STEP 2: Store input length for later use
-	reg [8:0] length = counter; // 2^9 bits = 512, max we can store is 504 bits
-
-	// STEP 3: Append 1 to the end of data and right pad with zeros
-	reg [7:0] append = 8'b1000_0000;
-	if (counter == 0) begin // No input case
-		data_storage = {data_storage[511:504], append};
-		data_storage[504:0] = 505'b0;
-	end else begin
-		data_storage = {data_storage[(counter*8)+7:8], append}; // append 1 with some padding
-		counter <= counter + 1;
-		// Shift it all to the left (right padding with 0)
-		always @(posedge clk) begin
-			if (input_complete && counter < 63) begin
-				data_storage = {data_storage[(counter*8)+7:8], 8'b0}
-				couner <= counter + 1;
-			end
+	reg [8:0] length; // 2^9 bits = 512, max we can store is 504 bits
+	always @(posedge clock) begin
+		if (input_complete) begin
+			length <= counter * 8;
 		end
 	end
 
-	// STEP 4: replace last 8 bits with length
-	data_storage [7:0] = length;
+	// STEP 3: Append 1 to the end of data and right pad with zeros
+	reg [7:0] append = 8'b1000_0000;
+	always @(posedge clock or posedge reset) begin
+		if (reset) begin
+			data_storage <= 512'b0;
+			counter <= 0;
+		end else if (input_complete) begin 
+			if (counter == 0) begin // No input case
+				data_storage <= {append, data_storage[503:0]}; // Append '1'
+				counter <= counter + 1;
+			end else if (counter < 63) begin
+				// Shift it all to the left (right padding with 0)
+				data_storage <= {data_storage[(counter*8)+7:8], append}; // append 1 with some padding
+				counter <= counter + 1;
+				data_storage <= {data_storage[(counter*8)+7:0], (511-(counter*8)+7)'b0};
+				counter <= 64;
+			end
+			// STEP 4: replace last 8 bits with length
+			data_storage [7:0] <= length;
 
-	
-
-	// STEP 6: Append 3 more 512 blocks of 0
-	reg weight_matrix [2047:0] = {data_storage, 1536'b0}
+			// STEP 6: Append 3 more 512 blocks of 0
+			reg weight_matrix [2047:0] <= {data_storage, 1536'b0}
+		end 
+	end
 
 	// STEP 7: Preform the first scramble
 	Weights weights (
@@ -83,7 +88,7 @@ module SHA256 #() (
 	reg [31:0] g = hash_values[63:32]; 
 	reg [31:0] h = hash_values[31:0];
 	reg [31:0] constant_i, weight_i;
-	SHA_256_Constants (
+	SHA256_Constants (
 		.clock(clock), .reset(reset), .output_constant(constant_i)
 	);
 
@@ -114,7 +119,7 @@ module SHA256 #() (
 	// STEP 10: Send the data out, 16 bits at a time
 	counter <= 0;
 	reg data_out[255:0] = {a, b, c, d, e, f, g, h};
-	reg output_ready = 1;
+	output_ready = 1;
 	always @(posedge clock) begin
 		if (output_ready && counter < 32) begin
 			hashed_data <= data_out[((32-i)*16)-1:(32-(i+1))*16];
@@ -147,18 +152,30 @@ module Weights (
 	input wire [2047:0] data,
 	output wire [2047:0] out
 );
-	always @(posedge clock) begin
-		for (integer i = 16; i < 64; i = i + 1) begin
-			reg [31:0] word0 = data[((i-15)*32)+31:((i-15)*32)]; // Get word0 from data
-			assign word0 = ({word0[6:0], word0[31:7]} ^ {word0[17:0], word0[31:18]} ^ (word0 >> 3));
+	// internal signals
+	reg [31:0] word0, word1, new_word;
 
-			reg [31:0] word1 = data[((i-2)*32)+31:((i-2)*32)]; // Get word1 from data
-			assign word1 = ({word1[16:0], word1[31:17]} ^ {word1[18:0], word1[31:19]} ^ (word1 >> 10));
+	always @(posedge clock or posedge reset) begin
+		if (reset) begin
+			out <= 2048'b0; // reset output to all zeros
+		end else begin
+			out <= data; // start with the input data	
+			// Perform calcualtions for words [16-63]
+			for (integer i = 16; i < 64; i = i + 1) begin
+				// Extract word0 and compute using right rotations and shifts
+				word0 = out[((i-15)*32)+31:((i-15)*32)]; 
+				word0 = ({word0[6:0], word0[31:7]} ^ {word0[17:0], word0[31:18]} ^ (word0 >> 3));
 
-			assign data[(i*32)+31:i*32] = data[((i-16)*32)+31:((i-16)*32)] + word0 + data[((i-7)*32)+31:((i-7)*32)] + word1;
+				word1 = out[((i-2)*32)+31:((i-2)*32)]; // Get word1 from data
+				word1 = ({word1[16:0], word1[31:17]} ^ {word1[18:0], word1[31:19]} ^ (word1 >> 10));
+
+				new_word = out[((i-16)*32)+31:((i-16)*32)] + word0 + out[((i-7)*32)+31:((i-7)*32)] + word1;
+			
+				// Insert the new word into the output
+				out[(i*32)+31:i*32] <= new_word;
+			end
 		end
 	end
-	assign out = data;
 endmodule
 
 
@@ -220,7 +237,7 @@ endmodule
 module SHA256_Constants (
 	input wire clock, 
 	input wire reset,
-	output reg [31:0] output_constant;
+	output reg [31:0] output_constant
 );
 
 	reg [2047:0] constant_array;
