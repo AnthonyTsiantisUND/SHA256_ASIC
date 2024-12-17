@@ -31,6 +31,7 @@ module SHA256_Driver;
     // clock 
     always # 5 clock = ~clock; 
 
+    // TEST CASE ONE -- hardcoded input 
     initial begin 
         // initialize signals 
         clock = 0; 
@@ -84,10 +85,28 @@ module SHA256_Driver;
         $stop
     end
 
-    // watch the output --> will be printed out
+    // TEST CASE TWO -- numeric sequence 
+    initial begin
+        # 150 // will start after test case 1 
+        // reset the system 
+        reset = 1; 
+        #20 reset = 0; 
+
+        // send numbers 1 through 10
+        for (i = 1; i <= 5; i = i + 1) begin 
+            input_data = i[7:0]; // assign i to an 8 bit register 
+            load_enable = 1; #10; load_enab;e = 0; #10;
+        end
+    end
+
+    // TEST CASE THREE -- use the stim.v file
+    initial begin 
+        #300; // will start after test case 2  
+        integer file, code; 
+endmodule
+
+// watch the output --> will be printed out
     initial begin 
         $monitor("time: %0d | reset: %b | load enable: %b | input data: %b | hashed data: %h",
                  $time, reset, load_enable, input_data, hashed_data);
     end
-
-endmodule
