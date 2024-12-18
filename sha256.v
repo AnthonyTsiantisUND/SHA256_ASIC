@@ -7,10 +7,13 @@
 	hased_data = 16 bits of hashed output
 	NOTE: Data is inputted left to right and the hash is outputted left to right
 */
-module SHA256 #() (
-	input logic clock, reset, load_enable, input_complete,
-	input logic[7:0] input_data,
-	output logic[15:0] hashed_data
+module SHA256 (
+	input clock, 
+	input reset, 
+	input load_enable, 
+	input input_complete,
+	input [7:0] input_data,
+	output [15:0] hashed_data
 );
 	// Internal signals
 	wire [511:0] 	padded_message_block;
@@ -32,7 +35,7 @@ module SHA256 #() (
 		.padding_done(padding_done)
 	);
 
-	// Convert 512 bit block to 2048 bit messageschedule
+	// Convert 512 bit block to 2048 bit message schedule
 	SHA256_Message_Scheduler message_scheduler(
 		.clock(clock), .reset(reset), .start(padding_done),
 		.padded_block(padded_message_block),
@@ -63,55 +66,50 @@ endmodule
 
 
 // Input module loads in input from user 8 bits (1 byte) at a time
-//	This module also pads the imput to 512
-// 	User input can be a binary string from size 0 to 512
+//	USER MUST INPUT A BINARY STRING OF 256 bits (32 bytes)
 module SHA256_input	(
-	input logic				clock, reset, load_enable, input_complete,
-	input logic	[7:0]		input_data,
-	output logic [511:0] 	padded_block,
-	output logic 			padding_done
+	input					clock, 
+	input					reset, 
+	input 					load_enable, 
+	input					input_complete,
+	input	[7:0]			input_data,
+	output  reg [511:0] 	padded_block,
+	output 	reg 			padding_done
 );
 	// Internal registers for data storage and counting
 	reg [511:0] message;
 	reg [5:0]	byte_count;
-	reg [8:0]	length_bits;
 
 	always @(posedge clock or posedge reset) begin
 		if (reset) begin
 			message 		<= 512'b0;
 			byte_count 		<= 6'd0;
-			length_bits		<= 9'd0;
-			padding_done 	<= 1'b0;
+			padding_done 			<= 1'b0;
 		end else begin
-			if (load_enable && !input_complete && byte_count < 63) begin
+			if (load_enable && !input_complete && byte_count < 32) begin
 				message 	<= {message[503:0], input_data};
 				byte_count 	<= byte_count + 1;
 			end
 
-			if (input_complete && !padding_done) begin
-				length_bits = byte_count * 8;
+			// If user input doesn't match the specified format
+			//	print the error and stop the program
+			if (input_complete && byte_count != 32) begin
+				$display("ERROR: USER INPUT MUST BE 256 bits (32 bytes)");
+				$stop;
+			end
 
-				// Preform padding
-				// 1. Append '10000000' (8'h0) after last byte of message
-				if (byte_count == 0) begin
-					message <= {8'h0, message[503:0]};
-					byte_count <= 1;
-				end else if (byte_count < 63) begin
-					// Insert 0x80 at next position remaining space is zero-padded
-					message <= {message[(byte_count*8)-1:0], 8'h80, {(512 - (byte_count*8) - 8){1'b0}}};
-					byte_count <= 63;
-				end
+			if (input_complete && !padding_done && byte_count == 32) begin
+				message <= {message[503:0], 8'h0}; // 1. Append '10000000' (8'h0) after last byte of message
+				message = message << 256; 	// 2. Shift the input so that it is big edian (right pad with zeros)
+				message[8:0] <= 9'b100000000; // 3. Must insert bit length into last bits 256 (decimal)
 
-				// Insert length in last 8 bits
-				message[7:0] <= length_bits[7:0];
+				// Signal done
 				padded_block <= message;
 				padding_done <= 1'b1;
 			end
 		end
 	end
 endmodule
-
-
 
 // s0 = (w[i-15] rightrotate 7) xor (w[i-15] rightrotate 18) xor (w[i-15] righthift 3)
 module scheduler_sigma0 (
@@ -123,43 +121,44 @@ endmodule
 
 // s1 = (w[i-2] rightrotate 17) xor (w[i-2] rightrotate 19) xor (w[i-2] righthift 10)
 module scheduler_sigma1 (
-	input wire [31:0] in_word,
-	output wire [31:0] out_word
+	input [31:0] in_word,
+	output [31:0] out_word
 );
 	assign out_word = ({in_word[16:0], in_word[31:17]} ^ {in_word[18:0], in_word[31:19]} ^ (in_word >> 10));
 endmodule
 
 // This message scheduler takes out 512 bit input and outputs a 2048 bit scheduler
 module SHA256_Message_Scheduler (
-	input wire				clock, reset, start,
-	input wire [511:0]		padded_block,
+	input				clock, reset, start,
+	input [511:0]		padded_block,
 	output reg [2047:0]	schedule_data,
 	output reg			schedule_ready
 );
 	// Internal State Machine
-	typedef enum logic [1:0] {
-		IDLE = 2'b00;
-		LOAD = 2'b01;
-		CALC = 2'b10;
-		DONE = 2'b11;
-	} state_t;
-
-	state_t current_state, next_state;
+	localparam IDLE = 2'b00;
+	localparam LOAD = 2'b01;
+	localparam CALC = 2'b10;
+	localparam DONE = 2'b11;
+	reg [1:0] current_state, next_state;
 
 	// Word counter 0->63
 	reg [6:0] counter;
 
 	// Functions to get and set words in scheduled data 
-	function automatic [31:0] get_word(
-		input [2047:0] data, 
-		input integer index
-	);
-		get_word = data[(2047 - (index*32)) : (2047 - (index*32) - 31)];
-	endfunction
+	function [31:0] get_word;
+		input [2047:0] data; // 2048-bit input data
+		input [4:0] index;   // 5-bit index for selecting a word (0 to 63)
+		integer offset;      // Variable to calculate bit offset
+		begin
+			offset = index * 32;
+			get_word = data[2047 - offset -: 32];
+		end
+  	endfunction
 
-	function automatic [2047:0] set_word(
-		input [2047:0] data, input integer index, input [31:0] word
-	); 
+	function [2047:0] set_word;
+		input [2047:0] data; 
+		input integer index;
+		input [31:0] word;
 		reg [2047:0] tmp;
 		integer bitpos;
 		begin
@@ -218,13 +217,13 @@ module SHA256_Message_Scheduler (
                     // W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
 
 					// get nessecary words
-					w_tm2_reg  <= get_word(scheduled_data, counter-2);
-                    w_tm7_reg  <= get_word(scheduled_data, counter-7);
-                    w_tm15_reg <= get_word(scheduled_data, counter-15);
-                    w_tm16_reg <= get_word(scheduled_data, counter-16);
+					w_tm2_reg  <= get_word(schedule_data, counter-2);
+                    w_tm7_reg  <= get_word(schedule_data, counter-7);
+                    w_tm15_reg <= get_word(schedule_data, counter-15);
+                    w_tm16_reg <= get_word(schedule_data, counter-16);
 					
 					w_temp = sigma1_out + w_tm7_reg + sigma0_out + w_tm16_reg;
-					scheduled_data <= set_word(scheduled_data, t, w_temp);
+					schedule_data <= set_word(schedule_data, counter, w_temp);
 					
 					if (counter < 63) begin
 						counter <= counter + 1;
@@ -252,7 +251,7 @@ endmodule
 module SHA256_Constants (
 	input wire clock, 
 	input wire reset,
-	output reg [31:0] output_constant
+	output wire [31:0] output_constant
 );
 
 	// Internals
@@ -308,38 +307,52 @@ endmodule
 //		g <= f
 //		h <= g
 module hash1 (
-	input logic [31:0] e_in,
-	output logic [31:0] hash1_out
+	input [31:0] e_in,
+	output [31:0] hash1_out
 );
 	assign hash1_out = ({e_in[5:0], e_in[31:6]} ^ {e_in[10:0], e_in[31:11]} ^ {e_in[24:0], e_in[31:25]});
 endmodule
 
 module hash0 (
-	input logic [31:0] a_in,
-	output logic [31:0] hash0_out
+	input [31:0] a_in,
+	output [31:0] hash0_out
 );
 	assign hash0_out = ({a_in[1:0], a_in[31:2]} ^ {a_in[12:0], a_in[31:13]} ^ {a_in[21:0], a_in[31:22]});
 endmodule
 
 module choose (
-	input logic [31:0] e_in, f_in, g_in,
-	output logic [31:0] choose_out
+	input [31:0] e_in, f_in, g_in,
+	output [31:0] choose_out
 );
 	assign choose_out = ((e_in & f_in) ^ ((~e_in) & g_in));
 endmodule
 
 module majority (
-	input logic  [31:0] a_in, b_in, c_in,
-	output logic [31:0] majority_out
+	input  [31:0] a_in, b_in, c_in,
+	output [31:0] majority_out
 );
 	assign majority_out = (a_in & b_in) ^ (a_in & c_in) ^ (b_in & c_in);
 endmodule
 
-
 module Compression_Round (
-	input logic [31:0] constant_i, weight_i,
-	input logic [31:0] a_in, b_in, c_in, d_in, e_in, f_in, g_in, h_in,
-	output logic [31:0] a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out
+	input [31:0] constant_i, 
+	input [31:0] weight_i,
+	input [31:0] a_in, 
+	input [31:0] b_in, 
+	input [31:0] c_in, 
+	input [31:0] d_in, 
+	input [31:0] e_in, 
+	input [31:0] f_in, 
+	input [31:0] g_in, 
+	input [31:0] h_in,
+	output [31:0] a_out, 
+	output [31:0] b_out, 
+	output [31:0] c_out, 
+	output [31:0] d_out, 
+	output [31:0] e_out, 
+	output [31:0] f_out, 
+	output [31:0] g_out, 
+	output [31:0] h_out
 );
 	// Internal wires
 	wire [31:0] hash1_out, hash0_out;
@@ -382,10 +395,12 @@ module Compression_Round (
 endmodule
 
 module SHA256_Compression_Engine (
-	input logic 			clock, reset, start,
-	input logic [2047:0] 	schedule_data,
-	output logic [255:0] 	final_hash,
-	output logic			done
+	input 					clock, 
+	input 					reset, 
+	input 					start,
+	input 		[2047:0] 	schedule_data,
+	output reg 	[255:0] 	final_hash,
+	output reg				done
 );
 	// Internal states, registers, counters
 	reg [31:0] 	a, b, c, d, e, f, g, h;
@@ -409,6 +424,15 @@ module SHA256_Compression_Engine (
 		32'h510E527F, 32'h9B05688C, 32'h1F83D9AB, 32'h5BE0CD19
 	};
 
+	// Preform a round
+	Compression_Round compression_round (
+		a, b, c, d, e, f, g, h,
+		constant_i, weight_i,
+		a_out, b_out, c_out, d_out,
+		e_out, f_out, g_out, h_out
+	);
+
+
 	always @(posedge clock or posedge reset) begin
 		if (reset) begin
 			{a, b, c, d, e, f, g, h} <= H0;
@@ -416,16 +440,6 @@ module SHA256_Compression_Engine (
 			done <= 0;
 		end else if (start && !done) begin
 			if (round_counter < 64) begin
-				// Preform a round
-				Compression_Round compression_round (
-					.a(a), .b(b), .c(c), .d(d),
-					.e(e), .f(f), g(g), .h(h),
-					.constant_i(constant_i),
-					.weight_i(weight_i),
-					.a_out(a_out), .b_out(b_out), .c_out(c_out), .d_out(d_out),
-					.e_out(e_out), .f_out(f_out), .g_out(g_out), .h_out(h_out)
-				);
-
 				// Update registers
 				{a, b, c, d, e, f, g, h} <= {a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out};
 				round_counter <= round_counter + 1;
@@ -449,11 +463,11 @@ endmodule
 // This module takes the final 256 bit hash and outputs 16 bits at a time 
 //	once the compression is complete
 module SHA256_Output_Handler (
-	input logic				clock, reset,
-	input logic				hash_ready,
-	input logic [255:0] 	final_hash,
-	output logic [15:0]		hashed_data,
-	output logic				done
+	input					clock, reset,
+	input					hash_ready,
+	input [255:0] 			final_hash,
+	output reg [15:0]		hashed_data,
+	output	reg				done
 );
 
 	// Internal
