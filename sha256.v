@@ -76,7 +76,7 @@ endmodule
 
 
 // Input module loads in input from user 8 bits (1 byte) at a time
-//	USER MUST INPUT A BINARY STRING OF 256 bits (32 bytes)
+// 	The user can input a max of 448 bits (56 bytes)
 module SHA256_input	(
 	input					clock, 
 	input					reset, 
@@ -88,31 +88,24 @@ module SHA256_input	(
 );
 	// Internal registers for data storage and counting
 	reg [511:0] message;
-	reg [5:0]	byte_count;
+	reg [8:0]	bit_count;
 
 	always @(posedge clock or posedge reset) begin
 		if (reset) begin
 			message 		<= 512'b0;
-			byte_count 		<= 6'd0;
+			bit_count 		<= 9'd0;
 			padding_done 	<= 1'b0;
 			padded_block 	<= 512'b0;
 		end else begin
-			if (load_enable && !input_complete && byte_count < 32) begin
+			if (load_enable && !input_complete && bit_count < 448) begin
 				message 	<= {message[503:0], input_data};
-				byte_count 	<= byte_count + 1;
+				bit_count 	<= bit_count + 8;
 			end
 
-			// If user input doesn't match the specified format
-			//	print the error and stop the program
-			if (input_complete && byte_count != 32) begin
-				$display("ERROR: USER INPUT MUST BE 256 bits (32 bytes)");
-				$stop;
-			end
-
-			if (input_complete && !padding_done && byte_count == 32) begin
+			if (input_complete && !padding_done) begin
 				message = {message[503:0], 8'h80}; // 1. Append '10000000' (8'h80) after last byte of message
-				message = message << 256; 	// 2. Shift the input so that it is big edian (right pad with zeros)
-				message[8:0] = 9'h100; // 3. Must insert bit length into last bits 256 (decimal)
+				message = message << 440 - bit_count; 	// 2. Shift the input so that it is big edian (right pad with zeros) (448 - 8 because we appended 1 byte)
+				message[8:0] = bit_count; // 3. Must insert bit length into last bits 256 (decimal)
 
 				// Signal done
 				padded_block <= message;

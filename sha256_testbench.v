@@ -72,13 +72,6 @@ module SHA256_testbench;
         input_data = 8'h21; // '!'
         #10;
 
-        // So far we have only sent in 9 bytes
-        //  so we will send in 23 bytes of 0's to get 256 bits total
-        for (i = 0; i < 23; i = i + 1) begin 
-            input_data = 8'h00;
-            #10;
-        end
-
         // Signal completion
         input_complete = 1;
         #10;
