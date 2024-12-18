@@ -102,9 +102,14 @@ module SHA256_input	(
 				bit_count 	<= bit_count + 8;
 			end
 
+			if (load_enable && !input_complete && bit_count > 448) begin
+				$display("ERROR: INPUT IS LIMITED TO 448 bits (56 bytes)");
+				$stop;
+			end
+
 			if (input_complete && !padding_done) begin
 				message = {message[503:0], 8'h80}; // 1. Append '10000000' (8'h80) after last byte of message
-				message = message << 440 - bit_count; 	// 2. Shift the input so that it is big edian (right pad with zeros) (448 - 8 because we appended 1 byte)
+				message = message << 512 - bit_count; 	// 2. Shift the input so that it is big edian (right pad with zeros) (448 - 8 because we appended 1 byte)
 				message[8:0] = bit_count; // 3. Must insert bit length into last bits 256 (decimal)
 
 				// Signal done
