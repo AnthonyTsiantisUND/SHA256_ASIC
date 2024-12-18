@@ -41,7 +41,10 @@ module SHA256_testbench;
 
         // Start loading the data
         load_enable = 1;
+        
+        
         // send binary data (one clock cycle per byte)
+       /*
         input_data = 8'h47; // 'G'
         #10; 
 
@@ -68,10 +71,40 @@ module SHA256_testbench;
 
         input_data = 8'h21; // '!'
         #10;
+        */
+
+
+        // Test case 2: CSE30342
+
+        input_data = 8'h43; // 'C'
+        #10
+
+        input_data = 8'h53; //'S'
+        #10
+
+        input_data = 8'h45; // 'E'
+        #10
+
+        input_data = 8'h33; // '3'
+        #10
+
+        input_data = 8'h30; // '0'
+        #10
+
+        input_data = 8'h33; // '3' 
+        #10 
+
+        input_data = 8'h34; //'4'
+        #10 
+
+        input_data = 8'h32; // '2'
+        #10 
 
         // Signal completion
         input_complete = 1;
         #10;
+        
+
 
         /*// TEST CASE TWO -- numeric sequence 
         initial begin
@@ -104,7 +137,8 @@ module SHA256_testbench;
         end else if (done) begin
             $write(" %h", hashed_data);
             $display("");
-            $display("Correct Hash: 60c9 b396 2375 4d14 4454 fd59 fac8 42d3 80ab 71b8 f824 c3b1 2afd fe46 be40 4e4e ");
+            $display("Correct Hash: 5f0c 51e0 4c27 9254 ff75 4729 1c39 356e 5102 e762 1461 4d38 a918 7306 69ae f9d0");
+            //$display("Correct Hash: 60c9 b396 2375 4d14 4454 fd59 fac8 42d3 80ab 71b8 f824 c3b1 2afd fe46 be40 4e4e ");
 
             $display("");
             $stop;
