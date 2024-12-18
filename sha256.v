@@ -545,8 +545,9 @@ endmodule
 module SHA256_Output_Handler (
 	input					clock, reset,
 	input					hash_ready,
-	input [255:0] 			final_hash,
-	output reg [15:0]		hashed_data,
+	input 			[255:0] final_hash,
+	output 	reg 	[15:0]	hashed_data,
+	output	reg 			read_enable,
 	output	reg				done
 );
 
@@ -558,19 +559,22 @@ module SHA256_Output_Handler (
 	always @(posedge clock or posedge reset) begin
 		if (reset) begin
 			hashed_data <= 16'b0;
-			hash_buffer <= 256'b0;
+			hash_buffer <= final_hash;
 			output_counter <= 0;
 			done <= 0;
+			read_enable <= 0;
 		end else begin
 			if (start && !done && output_counter == 0) begin
-				hash_buffer = final_hash;
-				output_counter = 16;
-				done = 0;
-			end else if (output_counter > 0) begin
-				hashed_data = hash_buffer[255:240];
-				hash_buffer = {hash_buffer[239:0], 16'b0};
-				output_counter = output_counter - 1;
-				if (output_counter == 0) done <= 1; // All words have been sent out
+				hash_buffer <= final_hash;
+				hashed_data <= final_hash[255:240];
+				output_counter <= 15;
+				done <= 0;
+				read_enable <= 1;
+			end else if (!done && output_counter > 0) begin
+				hashed_data <= hash_buffer[239:224];
+				hash_buffer <= {hash_buffer[223:0], 16'b0};
+				output_counter <= output_counter - 1;
+				if (output_counter == 1) done <= 1; // All words have been sent out
 			end
 		end
 	end

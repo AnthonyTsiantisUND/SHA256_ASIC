@@ -21,8 +21,6 @@ module SHA256_testbench;
         .hashed_data(hashed_data)
     );
 
-    wire done = dut.output_handler.hash_ready;
-
     // Clock generation: 10ns peroid -> 100MHz
     initial begin
         clock = 0;
@@ -43,7 +41,40 @@ module SHA256_testbench;
 
         // Start loading the data
         load_enable = 1;
-
+        // projectfpga.com
+        input_data = 8'h70;
+        #10;
+        input_data = 8'h72;
+        #10;
+        input_data = 8'h6F;
+        #10;
+        input_data = 8'h6A;
+        #10;
+        input_data = 8'h65;
+        #10;
+        input_data = 8'h63;
+        #10;
+        input_data = 8'h74;
+        #10;
+        input_data = 8'h66;
+        #10;
+        input_data = 8'h70;
+        #10;
+        input_data = 8'h67;
+        #10;
+        input_data = 8'h61;
+        #10;
+        input_data = 8'h2E;
+        #10;
+        input_data = 8'h63;
+        #10;
+        input_data = 8'h6F;
+        #10;
+        input_data = 8'h6D;
+        #10;
+        input_complete = 1;
+        #10;
+        /*
         // send binary data (one clock cycle per byte)
         input_data = 8'h47; // 'G'
         #10; 
@@ -77,7 +108,7 @@ module SHA256_testbench;
         #10;
 
         // TEST CASE TWO -- numeric sequence 
-        /*initial begin
+        initial begin
             # 150 // will start after test case 1 
             // reset the system 
             reset = 1; 
@@ -93,11 +124,19 @@ module SHA256_testbench;
     end
 
     // Monitor hashed_data changes to view our hashed data
+    reg temp = 1;
+    wire ready = dut.output_handler.read_enable;
+    wire done = dut.output_handler.done;
     always @(posedge clock) begin
-        if (dut.output_handler.hash_ready && !dut.output_handler.done) begin
-            $display("Output Word: %h", hashed_data);
-        end else if (dut.output_handler.done) begin
-            $display("Final output segment: %h", hashed_data);
+        if (temp) begin
+            $display("Input String: 'projectfpga.com'");
+            $write("Output:");
+            temp <= 0;
+        end if (ready && !done) begin
+            $write(" %h", hashed_data);
+        end else if (done) begin
+            $write(" %h", hashed_data);
+            $display("");
             $display("Hashing Complete. Check waveform or print statements for final hash.");
             $stop;
         end
