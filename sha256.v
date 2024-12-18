@@ -109,7 +109,7 @@ module SHA256_input	(
 
 			if (input_complete && !padding_done) begin
 				message = {message[503:0], 8'h80}; // 1. Append '10000000' (8'h80) after last byte of message
-				message = message << 512 - bit_count; 	// 2. Shift the input so that it is big edian (right pad with zeros) (448 - 8 because we appended 1 byte)
+				message = message << (504 - bit_count); 	// 2. Shift the input so that it is big edian (right pad with zeros)
 				message[8:0] = bit_count; // 3. Must insert bit length into last bits 256 (decimal)
 
 				// Signal done
@@ -122,136 +122,182 @@ endmodule
 
 // s0 = (w[i-15] rightrotate 7) xor (w[i-15] rightrotate 18) xor (w[i-15] righthift 3)
 module scheduler_sigma0 (
-	input wire [31:0] in_word,
-	output wire [31:0] out_word
+    input wire [31:0] in_word,
+    output wire [31:0] out_word
 );
-	assign out_word = ({in_word[6:0], in_word[31:7]} ^ {in_word[17:0], in_word[31:18]} ^ (in_word >> 3));
+    assign out_word = ({in_word[6:0], in_word[31:7]} ^ 
+                       {in_word[17:0], in_word[31:18]} ^ 
+                       (in_word >> 3));
 endmodule
 
 // s1 = (w[i-2] rightrotate 17) xor (w[i-2] rightrotate 19) xor (w[i-2] righthift 10)
 module scheduler_sigma1 (
-	input [31:0] in_word,
-	output [31:0] out_word
+    input [31:0] in_word,
+    output [31:0] out_word
 );
-	assign out_word = ({in_word[16:0], in_word[31:17]} ^ {in_word[18:0], in_word[31:19]} ^ (in_word >> 10));
+    assign out_word = ({in_word[16:0], in_word[31:17]} ^ 
+                       {in_word[18:0], in_word[31:19]} ^ 
+                       (in_word >> 10));
 endmodule
 
-// This message scheduler takes out 512 bit input and outputs a 2048 bit scheduler
+// This message scheduler takes in a 512-bit input and outputs a 2048-bit scheduler
 module SHA256_Message_Scheduler (
-	input				clock, reset, start,
-	input [511:0]		padded_block,
-	output reg [2047:0]	schedule_data,
-	output reg			schedule_ready
+    input                clock, reset, start,
+    input [511:0]        padded_block,
+    output reg [2047:0]  schedule_data,
+    output reg           schedule_ready
 );
-	// Internal State Machine
-	localparam IDLE = 2'b00;
-	localparam LOAD = 2'b01;
-	localparam CALC = 2'b10;
-	localparam DONE = 2'b11;
-	reg [1:0] current_state = IDLE;
-	reg [1:0] next_state = LOAD;
+    // Internal State Machine States
+    localparam IDLE         = 3'b000;
+    localparam LOAD         = 3'b001;
+    localparam GET_WORDS    = 3'b010;
+    localparam CALC_WEIGHT  = 3'b011;
+    localparam UPDATE       = 3'b100;
+    localparam DONE         = 3'b101;
 
-	// Word counter 0->63
-	reg [6:0] counter;
+    reg [2:0] current_state, next_state;
 
-	// Functions to get and set words in scheduled data 
-	function [31:0] get_word;
-		input [2047:0] data; // 2048-bit input data
-		input [4:0] index;   // 5-bit index for selecting a word (0 to 63)
-		integer offset;      // Variable to calculate bit offset
-		begin
-			offset = index * 32;
-			get_word = data[2047 - offset -: 32];
-		end
-  	endfunction
+    // Word counter 0->63
+    reg [5:0] counter; // 6 bits are sufficient for 0-63
 
-	function [2047:0] set_word;
-		input [2047:0] data; 
-		input integer index;
-		input [31:0] word;
-		reg [2047:0] tmp;
-		integer bitpos;
-		begin
-			tmp = data;
-			bitpos = 2047 - (index*32);
-			tmp[bitpos -: 32] = word;
-			set_word = tmp;
-		end
-	endfunction
+    // Functions to get and set words in schedule_data 
+    function [31:0] get_word;
+        input [2047:0] data; // 2048-bit input data
+        input [5:0] index;    // 6-bit index for selecting a word (0 to 63)
+        integer offset;       // Variable to calculate bit offset
+        begin
+            offset = index * 32;
+            get_word = data[2047 - offset -: 32];
+        end
+    endfunction
 
-	// Registers to store intermediate words during calculation
-	reg [31:0] w_tm2_reg, w_tm7_reg, w_tm15_reg, w_tm16_reg;
-	reg [31:0] w_temp;
+    function [2047:0] set_word;
+        input [2047:0] data; 
+        input [5:0] index;
+        input [31:0] word;
+        reg [2047:0] tmp;
+        integer bitpos;
+        begin
+            tmp = data;
+            bitpos = 2047 - (index * 32);
+            tmp[bitpos -: 32] = word;
+            set_word = tmp;
+        end
+    endfunction
 
-	// Sigma module outputs
-	wire [31:0] sigma0_out, sigma1_out;
+    // Registers to store intermediate words during calculation
+    reg [31:0] w_tm2_reg, w_tm7_reg, w_tm15_reg, w_tm16_reg;
+    reg [31:0] w_temp;
 
-	// sigma module
-	scheduler_sigma0 sigma0_inst (.in_word(w_tm15_reg), .out_word(sigma0_out));
-	scheduler_sigma1 sigma1_inst (.in_word(w_tm2_reg), .out_word(sigma1_out));
+    // Sigma module outputs
+    wire [31:0] sigma0_out, sigma1_out;
 
-	// Next state logic
-	always @(*) begin
-		next_state = current_state;
-		case (current_state)
-			IDLE: if (start) next_state = LOAD;
-			LOAD: next_state = CALC;
-			CALC: if (counter==63) next_state = DONE;
-			DONE: next_state = DONE;
-		endcase
-	end
+    // Instantiate sigma modules
+    scheduler_sigma0 sigma0_inst (.in_word(w_tm15_reg), .out_word(sigma0_out));
+    scheduler_sigma1 sigma1_inst (.in_word(w_tm2_reg), .out_word(sigma1_out));
 
-	// State operations
-	always @(posedge clock or posedge reset) begin
-		if (reset) begin
-			schedule_data <= 2048'b0;
-			schedule_ready <= 1'b0;
-			counter <= 0;
-			w_temp <= 32'h0;
-			w_tm2_reg <= 32'h0;
-			w_tm7_reg <= 32'h0;
-			w_tm15_reg <= 32'h0;
-			w_tm16_reg <= 32'h0;
-		end else begin
-			current_state <= next_state;
-			case (current_state)
-				IDLE: begin
-					schedule_ready <= 1'b0;
-					counter <= 0;
-				end
+    // Next state logic
+    always @(*) begin
+        next_state = current_state; // Default to no state change
+        case (current_state)
+            IDLE: begin
+                if (start)
+                    next_state = LOAD;
+            end
 
-				LOAD: begin
-					// Place padded_block into W[0..15] (first 512 bits)
-					//		REMEMBER W[0] is bits 2048->2016 (most significant)
-					schedule_data[2047:1536] <= padded_block;
-					counter <= 16; // start calculating 
-				end
+            LOAD: begin
+                next_state = GET_WORDS;
+            end
 
-				CALC: begin
-					// Compute W[t] for t >= 16
-                    // W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
+            GET_WORDS: begin
+                next_state = CALC_WEIGHT;
+            end
 
-					// get nessecary words
-					w_tm2_reg  <= get_word(schedule_data, counter-2);
-                    w_tm7_reg  <= get_word(schedule_data, counter-7);
-                    w_tm15_reg <= get_word(schedule_data, counter-15);
-                    w_tm16_reg <= get_word(schedule_data, counter-16);
-					
-					w_temp = sigma1_out + w_tm7_reg + sigma0_out + w_tm16_reg;
-					schedule_data <= set_word(schedule_data, counter, w_temp);
-					
-					if (counter < 63) begin
-						counter <= counter + 1;
-					end
-				end
+            CALC_WEIGHT: begin
+                next_state = UPDATE;
+            end
 
-				DONE: begin
-					// All W words computed
-					schedule_ready <= 1'b1;
-				end
-			endcase
-		end
-	end
+            UPDATE: begin
+                if (counter == 6'd63)
+                    next_state = DONE;
+                else
+                    next_state = GET_WORDS;
+            end
+
+            DONE: begin
+                // Remain in DONE until reset or a new start signal
+                next_state = DONE;
+            end
+
+            default: next_state = IDLE;
+        endcase
+    end
+
+    // State operations
+    always @(posedge clock or posedge reset) begin
+        if (reset) begin
+            // Reset all registers
+            schedule_data     <= 2048'd0;
+            schedule_ready    <= 1'b0;
+            counter           <= 6'd0;
+            w_temp            <= 32'h0;
+            w_tm2_reg         <= 32'h0;
+            w_tm7_reg         <= 32'h0;
+            w_tm15_reg        <= 32'h0;
+            w_tm16_reg        <= 32'h0;
+            current_state     <= IDLE;
+        end else begin
+            current_state <= next_state; // Transition to next state
+
+            case (current_state)
+                IDLE: begin
+                    schedule_ready <= 1'b0;
+                    counter        <= 6'd0;
+                end
+
+                LOAD: begin
+                    // Initialize entire schedule_data to zero
+                    schedule_data <= 2048'd0;
+                    // Place padded_block into W[0..15] (first 512 bits)
+                    // REMEMBER W[0] is bits 2047->2016 (most significant)
+                    schedule_data[2047:1536] <= padded_block;
+                    counter <= 6'd16; // Start calculating from W[16]
+                end
+
+                GET_WORDS: begin
+                    // Fetch necessary words for computation
+                    w_tm2_reg  <= get_word(schedule_data, counter - 6'd2);
+                    w_tm7_reg  <= get_word(schedule_data, counter - 6'd7);
+                    w_tm15_reg <= get_word(schedule_data, counter - 6'd15);
+                    w_tm16_reg <= get_word(schedule_data, counter - 6'd16);
+                end
+
+                CALC_WEIGHT: begin
+                    // Compute W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
+                    // Note: Verilog handles overflow naturally
+                    w_temp <= sigma1_out + w_tm7_reg + sigma0_out + w_tm16_reg;
+                end
+
+                UPDATE: begin
+                    // Update schedule_data with the new word W[t]
+                    schedule_data <= set_word(schedule_data, counter, w_temp);
+
+                    // Increment the counter if not at the last word
+                    if (counter < 6'd63)
+                        counter <= counter + 6'd1;
+                end
+
+                DONE: begin
+                    // All W words computed
+                    schedule_ready <= 1'b1;
+                end
+
+                default: begin
+                    // Default case (optional)
+                end
+            endcase
+        end
+    end
 endmodule
 
 
@@ -431,7 +477,7 @@ module SHA256_Compression_Engine (
 		.output_constant(constant_i)
 	);
 
-	assign weight_i = schedule_data[((round_counter)*32)+31 -: 32];
+	assign weight_i = schedule_data[2047 - (round_counter * 32) -: 32];
 
 	// Inital Hash Values
 	localparam [255:0] H0 = {
@@ -441,12 +487,25 @@ module SHA256_Compression_Engine (
 
 	// Preform a round
 	Compression_Round compression_round (
-		a, b, c, d, e, f, g, h,
-		constant_i, weight_i,
-		a_out, b_out, c_out, d_out,
-		e_out, f_out, g_out, h_out
+		.constant_i(constant_i),
+		.weight_i(weight_i),
+		.a_in(a),
+		.b_in(b),
+		.c_in(c),
+		.d_in(d),
+		.e_in(e),
+		.f_in(f),
+		.g_in(g),
+		.h_in(h),
+		.a_out(a_out),
+		.b_out(b_out),
+		.c_out(c_out),
+		.d_out(d_out),
+		.e_out(e_out),
+		.f_out(f_out),
+		.g_out(g_out),
+		.h_out(h_out)
 	);
-
 
 	always @(posedge clock or posedge reset) begin
 		if (reset) begin
