@@ -12,219 +12,234 @@ module SHA256 #() (
 	input logic[7:0] input_data,
 	output logic[15:0] hashed_data
 );
-	reg output_ready = 0;
-	// PREPROCESSING THE DATA
-	// STEP 1: Get input 1 bytes/8 bits/one character at a time
-	reg [511:0] data_storage; // 512 bit input (We are only inputting 504 bits to allow for the additional 1 + padding
-	reg [5:0] counter; // 6 bits are enough to count upto 64 (64 * 8 = 512)
-	
-	// NOTE: we need exactly 512 bits, therefore we will load in 63 times (63 * 8 = 504 bits)
-	//		 so that we can add one and pad (part of SHA256 algorithm)
-	always @(posedge clock or posedge reset) begin
-		// If reset, clear the data_storage and counter
-		if (reset) begin
-			data_storage <= 512'b0;
-			counter <= 0;
-		end else if (!reset && load_enable && !input_complete && counter < 63) begin
-			data_storage <= {data_storage[503:0], input_data}; // Shift what is currently in the register to the left by 8 and load in next input
-			counter <= counter + 1;
-		end
-	end
+	// Internal signals
+	wire [511:0] 	padded_message_block;
+	wire 		 	padding_done;
+	wire [2047:0] 	schedule_data;
+	wire [255:0] 	final_hash;
+	wire 			schedule_ready;
+	wire			compression_done;
+	wire			hash_ready;
 
-	// STEP 2: Store input length for later use
-	reg [8:0] length; // 2^9 bits = 512, max we can store is 504 bits
-	always @(posedge clock) begin
-		if (input_complete) begin
-			length <= counter * 8;
-		end
-	end
-
-	// STEP 3: Append 1 to the end of data and right pad with zeros
-	reg [7:0] append = 8'b1000_0000;
-	always @(posedge clock or posedge reset) begin
-		if (reset) begin
-			data_storage <= 512'b0;
-			counter <= 0;
-		end else if (input_complete) begin 
-			if (counter == 0) begin // No input case
-				data_storage <= {append, data_storage[503:0]}; // Append '1'
-				counter <= counter + 1;
-			end else if (counter < 63) begin
-				// Shift it all to the left (right padding with 0)
-				data_storage <= {data_storage[(counter*8)+7:8], append}; // append 1 with some padding
-				counter <= counter + 1;
-				data_storage <= {data_storage[(counter*8)+7:0], (511-(counter*8)+7)'b0};
-				counter <= 64;
-			end
-			// STEP 4: replace last 8 bits with length
-			data_storage [7:0] <= length;
-
-			// STEP 6: Append 3 more 512 blocks of 0
-			reg weight_matrix [2047:0] <= {data_storage, 1536'b0}
-		end 
-	end
-
-	// STEP 7: Preform the first scramble
-	Weights weights (
+	// Instantiate input loader and padder
+	SHA256_input loader_and_padder (
 		.clock(clock),
-		.data(weight_matrix),
-		.out(weight_matrix)
+		.reset(reset),
+		.load_enable(load_enable),
+		.input_complete(input_complete),
+		.input_data(input_data),
+		.padded_block(padded_message_block),
+		.padding_done(padding_done)
+	);
+
+	// Convert 512 bit block to 2048 bit messageschedule
+	SHA256_Message_Scheduler message_scheduler(
+		.clock(clock), .reset(reset), .start(padding_done),
+		.padded_block(padded_message_block),
+		.schedule_data(schedule_data),
+		.schedule_ready(schedule_ready)
 	);
 
 
-	// STEP 8: Compression Cycle
-	// 		   Initalize the 8 hash values to our presets
-	//         with our 64 word data, we will modify these hash values over and over
-	reg [255:0] hash_values = {
-		32'h6A09E667, 32'hBB67AE85, 32'h3C6EF372, 32'hA54FF53A,
-		32'h510E527F, 32'h9B05688C, 32'h1F83D9AB, 32'h5BE0CD19
-	};
-	reg [31:0] a = hash_values[255:224];
-	reg [31:0] b = hash_values[223:192];
-	reg [31:0] c = hash_values[191:160];
-	reg [31:0] d = hash_values[159:128];
-	reg [31:0] e = hash_values[127:96];
-	reg [31:0] f = hash_values[95:64];
-	reg [31:0] g = hash_values[63:32]; 
-	reg [31:0] h = hash_values[31:0];
-	reg [31:0] constant_i, weight_i;
-	SHA256_Constants (
-		.clock(clock), .reset(reset), .output_constant(constant_i)
+	// Instantiate compression engine
+	SHA256_Compression_Engine compression_inst (
+		.clock(clock),
+		.reset(reset),
+		.start(schedule_ready),
+		.schedule_data(schedule_data),
+		.final_hash(final_hash),
+		.done(compression_done)
 	);
 
-	always @(posedge clock) begin
-		for (integer i = 0; i < 64; i = i + 1) begin
-			assign weight_i = weight_matrix[(i*32)+31:i*32];
-			Compression compress (
-				.constant_i(constant_i), .weight_i(weight_i),
-				.a_in(a), .b_in(b), .c_in(c), .d_in(d), 
-				.e_in(e), .f_in(f), .g_in(g), .h_in(h),
-				.a_out(a), .b_out(b), .c_out(c), .d_out(d), 
-				.e_out(e), .f_out(f), .g_out(g), .h_out(h)
-			);
-		end
-	end
-
-	// STEP 9: Add the original hashes back to our new values
-	a <= a + hash_values[255:224];
-	b <= b + hash_values[223:192];
-	c <= c + hash_values[191:160];
-	d <= b + hash_values[159:128];
-	e <= e + hash_values[127:96];
-	f <= f + hash_values[95:64];
-	g <= g + hash_values[63:32]; 
-	h <= h + hash_values[31:0];
-	
-	
-	// STEP 10: Send the data out, 16 bits at a time
-	counter <= 0;
-	reg data_out[255:0] = {a, b, c, d, e, f, g, h};
-	output_ready = 1;
-	always @(posedge clock) begin
-		if (output_ready && counter < 32) begin
-			hashed_data <= data_out[((32-i)*16)-1:(32-(i+1))*16];
-			counter <= counter + 1;
-		end	
-	
-	end
-
-
-
-	// Initial block for simulation purposes
-    initial begin
-		data_storage = 512'b0;
-		counter = 0;
-		input_complete = 0;
-		output_ready = 0;
-	end
-
+	// Handle the output
+	SHA256_Output_Handler output_handler (
+		.clock(clock), .reset(reset),
+		.hash_ready(compression_done),
+		.final_hash(final_hash),
+		.hashed_data(hashed_data),
+		.done(hash_ready)
+	);
 endmodule
 
-// This is the first right rotate module
-// Our goal is to take a 32 bit (word) input from our 2048 bit dataset
-// and for each word from [16-63] we will proform the following function
-// 	word1 = (word1[i-15] rightrotate 7) xor (word1[i-15] rightrotate 18) xor (word1[i-15] righthift 3)
-//	word2 = (word2[i-2] rightrotate 17) xor (word2[i-2] rightrotate 19) xor (word2[i-2] righthift 10)
-// 	new_word = data_word[i-16] + word0 + data_word[i-7] + word1
 
-module Weights (
-	input wire clock,
-	input wire [2047:0] data,
-	output wire [2047:0] out
+// Input module loads in input from user 8 bits (1 byte) at a time
+//	This module also pads the imput to 512
+// 	User input can be a binary string from size 0 to 512
+module SHA256_input	(
+	input logic				clock, reset, load_enable, input_complete,
+	input logic	[7:0]		input_data,
+	output logic [511:0] 	padded_block,
+	output logic 			padding_done
 );
-	// internal signals
-	reg [31:0] word0, word1, new_word;
+	// Internal registers for data storage and counting
+	reg [511:0] message;
+	reg [5:0]	byte_count;
+	reg [8:0]	length_bits;
 
 	always @(posedge clock or posedge reset) begin
 		if (reset) begin
-			out <= 2048'b0; // reset output to all zeros
+			message 		<= 512'b0;
+			byte_count 		<= 6'd0;
+			length_bits		<= 9'd0;
+			padding_done 	<= 1'b0;
 		end else begin
-			out <= data; // start with the input data	
-			// Perform calcualtions for words [16-63]
-			for (integer i = 16; i < 64; i = i + 1) begin
-				// Extract word0 and compute using right rotations and shifts
-				word0 = out[((i-15)*32)+31:((i-15)*32)]; 
-				word0 = ({word0[6:0], word0[31:7]} ^ {word0[17:0], word0[31:18]} ^ (word0 >> 3));
+			if (load_enable && !input_complete && byte_count < 63) begin
+				message 	<= {message[503:0], input_data};
+				byte_count 	<= byte_count + 1;
+			end
 
-				word1 = out[((i-2)*32)+31:((i-2)*32)]; // Get word1 from data
-				word1 = ({word1[16:0], word1[31:17]} ^ {word1[18:0], word1[31:19]} ^ (word1 >> 10));
+			if (input_complete && !padding_done) begin
+				length_bits = byte_count * 8;
 
-				new_word = out[((i-16)*32)+31:((i-16)*32)] + word0 + out[((i-7)*32)+31:((i-7)*32)] + word1;
-			
-				// Insert the new word into the output
-				out[(i*32)+31:i*32] <= new_word;
+				// Preform padding
+				// 1. Append '10000000' (8'h0) after last byte of message
+				if (byte_count == 0) begin
+					message <= {8'h0, message[503:0]};
+					byte_count <= 1;
+				end else if (byte_count < 63) begin
+					// Insert 0x80 at next position remaining space is zero-padded
+					message <= {message[(byte_count*8)-1:0], 8'h80, {(512 - (byte_count*8) - 8){1'b0}}};
+					byte_count <= 63;
+				end
+
+				// Insert length in last 8 bits
+				message[7:0] <= length_bits[7:0];
+				padded_block <= message;
+				padding_done <= 1'b1;
 			end
 		end
 	end
 endmodule
 
 
-// This is our compression / hashing function
-//	The first input is the constant and weight words at out index i
-//	The second input 8, 32 bit words that we will continuously hash
-//	The output is the next input to this function (Originally, all words are our 
-// 		first 8 prime constants
-//	Computations:
-//			hash1 = (e rightrotate 6) xor (e rightrotate 11) xor (e rightrotate 25)
-//			hash0 = (a rightrotate 2) xor (a rightrotate 13) xor (a rightrotate 22)
-//			choose = (e and f) xor ((!e) and g)
-//			majority = (a and b) xor (a and c) xor (b and c)
-//			word0 = h + hash1 + choose + constant + weight
-//			word1 = hash0 + choose + constant + weight
-//	Outputs:
-//		a <= word0 + word1
-//		b <= a
-//		c <= b
-//		d <= c
-//		e <= d + word0
-//		f <= e
-//		g <= f
-//		h <= g
-module Compression (
-	input [31:0] constant_i, weight_i,
-	input [31:0] a_in, b_in, c_in, d_in, e_in, f_in, g_in, h_in,
-	output [31:0] a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out
-);
-	wire [31:0] hash1 = ({e_in[5:0], e_in[31:6]} ^ {e_in[10:0], e_in[31:11]} ^ {e_in[24:0], e_in[31:25]});
-	wire [31:0] hash0 = ({a_in[1:0], a_in[31:2]} ^ {a_in[12:0], a_in[31:13]} ^ {a_in[21:0], a_in[31:22]});
-	wire [31:0] choose_e_f_g = ((e_in & f_in) ^ ((~e_in) & g_in));
-	wire [31:0] majority_a_b_c = (a_in & b_in) ^ (a_in & c_in) ^ (b_in & c_in);
-	
-	// Compute values
-	wire [31:0] word0 = h_in + hash1 + choose_e_f_g + constant_i + weight_i;
-	wire [31:0] word1 = hash0 + majority_a_b_c;
-	
-	// Assign outputs
-	assign a_out = word0 + word1;
-	assign b_out = a_in;
-	assign c_out = b_in;
-	assign d_out = c_in;
-	assign e_out = d_in + word0;
-	assign f_out = e_in;
-	assign g_out = f_in;
-	assign h_out = g_in;
 
+// s0 = (w[i-15] rightrotate 7) xor (w[i-15] rightrotate 18) xor (w[i-15] righthift 3)
+module scheduler_sigma0 (
+	input wire [31:0] in_word,
+	output wire [31:0] out_word
+);
+	assign out_word = ({in_word[6:0], in_word[31:7]} ^ {in_word[17:0], in_word[31:18]} ^ (in_word >> 3));
 endmodule
+
+// s1 = (w[i-2] rightrotate 17) xor (w[i-2] rightrotate 19) xor (w[i-2] righthift 10)
+module scheduler_sigma1 (
+	input wire [31:0] in_word,
+	output wire [31:0] out_word
+);
+	assign out_word = ({in_word[16:0], in_word[31:17]} ^ {in_word[18:0], in_word[31:19]} ^ (in_word >> 10));
+endmodule
+
+// This message scheduler takes out 512 bit input and outputs a 2048 bit scheduler
+module SHA256_Message_Scheduler (
+	input wire				clock, reset, start,
+	input wire [511:0]		padded_block,
+	output reg [2047:0]	schedule_data,
+	output reg			schedule_ready
+);
+	// Internal State Machine
+	typedef enum logic [1:0] {
+		IDLE = 2'b00;
+		LOAD = 2'b01;
+		CALC = 2'b10;
+		DONE = 2'b11;
+	} state_t;
+
+	state_t current_state, next_state;
+
+	// Word counter 0->63
+	reg [6:0] counter;
+
+	// Functions to get and set words in scheduled data 
+	function automatic [31:0] get_word(
+		input [2047:0] data, 
+		input integer index
+	);
+		get_word = data[(2047 - (index*32)) : (2047 - (index*32) - 31)];
+	endfunction
+
+	function automatic [2047:0] set_word(
+		input [2047:0] data, input integer index, input [31:0] word
+	); 
+		reg [2047:0] tmp;
+		integer bitpos;
+		begin
+			tmp = data;
+			bitpos = 2047 - (index*32);
+			tmp[bitpos -: 32] = word;
+			set_word = tmp;
+		end
+	endfunction
+
+	// Registers to store intermediate words during calculation
+	reg [31:0] w_tm2_reg, w_tm7_reg, w_tm15_reg, w_tm16_reg;
+	reg [31:0] w_temp;
+
+	// Sigma module outputs
+	wire [31:0] sigma0_out, sigma1_out;
+
+	// sigma module
+	scheduler_sigma0 sigma0_inst (.in_word(w_tm15_reg), .out_word(sigma0_out));
+	scheduler_sigma1 sigma1_inst (.in_word(w_tm2_reg), .out_word(sigma1_out));
+
+	// Next state logic
+	always @(*) begin
+		next_state = current_state;
+		case (current_state)
+			IDLE: if (start) next_state = LOAD;
+			LOAD: next_state = CALC;
+			CALC: if (counter==63) next_state = DONE;
+			DONE: next_state = DONE;
+		endcase
+	end
+
+	// State operations
+	always @(posedge clock or posedge reset) begin
+		if (reset) begin
+			schedule_data <= 2048'b0;
+			schedule_ready <= 1'b0;
+			counter <= 0;
+			w_temp <= 32'h0;
+		end else begin
+			case (current_state)
+				IDLE: begin
+					schedule_ready <= 1'b0;
+					counter <= 0;
+				end
+
+				LOAD: begin
+					// Place padded_block into W[0..15] (first 512 bits)
+					//		REMEMBER W[0] is bits 2048->2016 (most significant)
+					schedule_data[2047:1536] <= padded_block;
+					counter <= 16; // start calculating 
+				end
+
+				CALC: begin
+					// Compute W[t] for t >= 16
+                    // W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
+
+					// get nessecary words
+					w_tm2_reg  <= get_word(scheduled_data, counter-2);
+                    w_tm7_reg  <= get_word(scheduled_data, counter-7);
+                    w_tm15_reg <= get_word(scheduled_data, counter-15);
+                    w_tm16_reg <= get_word(scheduled_data, counter-16);
+					
+					w_temp = sigma1_out + w_tm7_reg + sigma0_out + w_tm16_reg;
+					scheduled_data <= set_word(scheduled_data, t, w_temp);
+					
+					if (counter < 63) begin
+						counter <= counter + 1;
+					end
+				end
+
+				DONE: begin
+					// All W words computed
+					schedule_ready <= 1'b1;
+				end
+			endcase
+		end
+	end
+endmodule
+
 
 /*
 	There are 64, 32 bit constants.
@@ -240,10 +255,10 @@ module SHA256_Constants (
 	output reg [31:0] output_constant
 );
 
+	// Internals
 	reg [2047:0] constant_array;
 	wire [2047:0] rotated_array = { constant_array[2015:0], constant_array[2047:2016] };
 	assign output_constant = constant_array[2047:2016];
-
 
 	always @(posedge clock) begin
 		if (reset) begin
@@ -267,6 +282,201 @@ module SHA256_Constants (
 			};
 		end else begin 
 			constant_array = rotated_array;
+		end
+	end
+endmodule
+
+// This is our compression / hashing function
+//	The first input is the constant and weight words at out index i
+//	The second input 8, 32 bit words that we will continuously hash
+//	The output is the next input to this function (Originally, all words are our 
+// 		first 8 prime constants
+//	Computations:
+//			hash1 = (e rightrotate 6) xor (e rightrotate 11) xor (e rightrotate 25)
+//			hash0 = (a rightrotate 2) xor (a rightrotate 13) xor (a rightrotate 22)
+//			choose = (e and f) xor ((!e) and g)
+//			majority = (a and b) xor (a and c) xor (b and c)
+//			word0 = h + hash1 + choose + constant + weight
+//			word1 = hash0 + choose + constant + weight
+//	Outputs:
+//		a <= word0 + word1
+//		b <= a
+//		c <= b
+//		d <= c
+//		e <= d + word0
+//		f <= e
+//		g <= f
+//		h <= g
+module hash1 (
+	input logic [31:0] e_in,
+	output logic [31:0] hash1_out
+);
+	assign hash1_out = ({e_in[5:0], e_in[31:6]} ^ {e_in[10:0], e_in[31:11]} ^ {e_in[24:0], e_in[31:25]});
+endmodule
+
+module hash0 (
+	input logic [31:0] a_in,
+	output logic [31:0] hash0_out
+);
+	assign hash0_out = ({a_in[1:0], a_in[31:2]} ^ {a_in[12:0], a_in[31:13]} ^ {a_in[21:0], a_in[31:22]});
+endmodule
+
+module choose (
+	input logic [31:0] e_in, f_in, g_in,
+	output logic [31:0] choose_out
+);
+	assign choose_out = ((e_in & f_in) ^ ((~e_in) & g_in));
+endmodule
+
+module majority (
+	input logic  [31:0] a_in, b_in, c_in,
+	output logic [31:0] majority_out
+);
+	assign majority_out = (a_in & b_in) ^ (a_in & c_in) ^ (b_in & c_in);
+endmodule
+
+
+module Compression_Round (
+	input logic [31:0] constant_i, weight_i,
+	input logic [31:0] a_in, b_in, c_in, d_in, e_in, f_in, g_in, h_in,
+	output logic [31:0] a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out
+);
+	// Internal wires
+	wire [31:0] hash1_out, hash0_out;
+	wire [31:0] choose_out, majority_out;
+
+	// Sub-Module calls
+	hash1 hash1_inst (
+		.e_in(e_in),
+		.hash1_out(hash1_out)
+	);
+
+	hash0 hash0_inst (
+		.a_in(a_in),
+		.hash0_out(hash0_out)
+	);
+
+	choose choose_inst (
+		.e_in(e_in), .f_in(f_in), .g_in(g_in),
+		.choose_out(choose_out)
+	);
+
+	majority majority_inst (
+		.a_in(a_in), .b_in(b_in), .c_in(c_in),
+		.majority_out(majority_out)
+	);
+	
+	// Compute values
+	wire [31:0] word0 = h_in + hash1_out + choose_out + constant_i + weight_i;
+	wire [31:0] word1 = hash0_out + majority_out;
+	
+	// Assign outputs
+	assign a_out = word0 + word1;
+	assign b_out = a_in;
+	assign c_out = b_in;
+	assign d_out = c_in;
+	assign e_out = d_in + word0;
+	assign f_out = e_in;
+	assign g_out = f_in;
+	assign h_out = g_in;
+endmodule
+
+module SHA256_Compression_Engine (
+	input logic 			clock, reset, start,
+	input logic [2047:0] 	schedule_data,
+	output logic [255:0] 	final_hash,
+	output logic			done
+);
+	// Internal states, registers, counters
+	reg [31:0] 	a, b, c, d, e, f, g, h;
+	reg [5:0]	round_counter;
+	wire [31:0]	constant_i;
+	wire [31:0]	weight_i;
+	wire [31:0]	a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out;
+
+	// Constants block
+	SHA256_Constants constants_inst (
+		.clock(clock),
+		.reset(reset),
+		.output_constant(constant_i)
+	);
+
+	assign weight_i = schedule_data[((round_counter)*32)+31 -: 32];
+
+	// Inital Hash Values
+	localparam [255:0] H0 = {
+		32'h6A09E667, 32'hBB67AE85, 32'h3C6EF372, 32'hA54FF53A,
+		32'h510E527F, 32'h9B05688C, 32'h1F83D9AB, 32'h5BE0CD19
+	};
+
+	always @(posedge clock or posedge reset) begin
+		if (reset) begin
+			{a, b, c, d, e, f, g, h} <= H0;
+			round_counter <= 0;
+			done <= 0;
+		end else if (start && !done) begin
+			if (round_counter < 64) begin
+				// Preform a round
+				Compression_Round compression_round (
+					.a(a), .b(b), .c(c), .d(d),
+					.e(e), .f(f), g(g), .h(h),
+					.constant_i(constant_i),
+					.weight_i(weight_i),
+					.a_out(a_out), .b_out(b_out), .c_out(c_out), .d_out(d_out),
+					.e_out(e_out), .f_out(f_out), .g_out(g_out), .h_out(h_out)
+				);
+
+				// Update registers
+				{a, b, c, d, e, f, g, h} <= {a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out};
+				round_counter <= round_counter + 1;
+			end else if (round_counter == 64) begin
+				// add original hash values
+				final_hash[255:224] <= a + H0[255:224];
+                final_hash[223:192] <= b + H0[223:192];
+                final_hash[191:160] <= c + H0[191:160];
+                final_hash[159:128] <= d + H0[159:128];
+                final_hash[127:96]  <= e + H0[127:96];
+                final_hash[95:64]   <= f + H0[95:64];
+                final_hash[63:32]   <= g + H0[63:32];
+                final_hash[31:0]    <= h + H0[31:0];
+				done <= 1;
+			end
+		end
+	end
+endmodule
+
+
+// This module takes the final 256 bit hash and outputs 16 bits at a time 
+//	once the compression is complete
+module SHA256_Output_Handler (
+	input logic				clock, reset,
+	input logic				hash_ready,
+	input logic [255:0] 	final_hash,
+	output logic [15:0]		hashed_data,
+	output logic				done
+);
+
+	// Internal
+	reg [255:0] hash_buffer;
+	reg [4:0]	output_counter;
+
+	always @(posedge clock or posedge reset) begin
+		if (reset) begin
+			hashed_data <= 16'b0;
+			hash_buffer <= 256'b0;
+			output_counter <= 0;
+			done <= 0;
+		end else begin
+			if (hash_ready && output_counter == 0) begin
+				hash_buffer <= final_hash;
+				output_counter <= 16; 	// 256 bits / 16 = 16 steps
+				done <= 0;
+			end else if (output_counter > 0) begin
+				hashed_data <= hash_buffer[255:240];
+				hash_buffer <= {hash_buffer[239:0], 16'b0};
+				output_counter <= output_counter - 1;
+				if (output_counter == 1) done <= 1; // All words have been sent out
+			end
 		end
 	end
 endmodule
