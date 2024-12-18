@@ -312,6 +312,7 @@ endmodule
 module SHA256_Constants (
 	input wire clock, 
 	input wire reset,
+	input wire enable,
 	output wire [31:0] output_constant
 );
 
@@ -340,7 +341,7 @@ module SHA256_Constants (
 				32'h748f82ee, 32'h78a5636f, 32'h84c87814, 32'h8cc70208,
 				32'h90befffa, 32'ha4506ceb, 32'hbef9a3f7, 32'hc67178f2
 			};
-		end else begin 
+		end else if (enable) begin 
 			constant_array = rotated_array;
 		end
 	end
@@ -470,10 +471,14 @@ module SHA256_Compression_Engine (
 	wire [31:0]	weight_i;
 	wire [31:0]	a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out;
 
+	// Generate enable signal: active when processing rounds
+    wire enable_constants = start && !done && (round_counter < 64);
+
 	// Constants block
 	SHA256_Constants constants_inst (
 		.clock(clock),
 		.reset(reset),
+		.enable(enable_constants),
 		.output_constant(constant_i)
 	);
 
