@@ -97,14 +97,15 @@ module SHA256_testbench;
         if (temp) begin
             $display("");
             $display("Input String: Go Irish!");
-            $write("Output:");
+            $write("Output Hash: ");
             temp <= 0;
         end if (ready && !done) begin
             $write(" %h", hashed_data);
         end else if (done) begin
             $write(" %h", hashed_data);
             $display("");
-            $display("Hashing Complete. ");
+            $display("Correct Hash: 60c9 b396 2375 4d14 4454 fd59 fac8 42d3 80ab 71b8 f824 c3b1 2afd fe46 be40 4e4e ");
+
             $display("");
             $stop;
         end
