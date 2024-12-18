@@ -1,3 +1,13 @@
+/********************************************************************************************
+*	Module name: sha256
+*	Pre-Conditions: none
+*	Post-Conditions: none
+*	
+*	This contains the verilog design for the sha256 asic.
+*   Developed by Anthony Tsiantis, Natalie Sekerak and Olivia Zino
+*   for CSE 30342 @ University of Notre Dame
+*******************************************************************************************/ 
+`timescale 1ns/1ps
 /*
 	clock = clock signal
 	reset = clear input
@@ -84,7 +94,8 @@ module SHA256_input	(
 		if (reset) begin
 			message 		<= 512'b0;
 			byte_count 		<= 6'd0;
-			padding_done 			<= 1'b0;
+			padding_done 	<= 1'b0;
+			padded_block 	<= 512'b0;
 		end else begin
 			if (load_enable && !input_complete && byte_count < 32) begin
 				message 	<= {message[503:0], input_data};
@@ -99,9 +110,9 @@ module SHA256_input	(
 			end
 
 			if (input_complete && !padding_done && byte_count == 32) begin
-				message <= {message[503:0], 8'h0}; // 1. Append '10000000' (8'h0) after last byte of message
+				message = {message[503:0], 8'h80}; // 1. Append '10000000' (8'h80) after last byte of message
 				message = message << 256; 	// 2. Shift the input so that it is big edian (right pad with zeros)
-				message[8:0] <= 9'b100000000; // 3. Must insert bit length into last bits 256 (decimal)
+				message[8:0] = 9'h100; // 3. Must insert bit length into last bits 256 (decimal)
 
 				// Signal done
 				padded_block <= message;
@@ -139,7 +150,8 @@ module SHA256_Message_Scheduler (
 	localparam LOAD = 2'b01;
 	localparam CALC = 2'b10;
 	localparam DONE = 2'b11;
-	reg [1:0] current_state, next_state;
+	reg [1:0] current_state = IDLE;
+	reg [1:0] next_state = LOAD;
 
 	// Word counter 0->63
 	reg [6:0] counter;
@@ -198,7 +210,12 @@ module SHA256_Message_Scheduler (
 			schedule_ready <= 1'b0;
 			counter <= 0;
 			w_temp <= 32'h0;
+			w_tm2_reg <= 32'h0;
+			w_tm7_reg <= 32'h0;
+			w_tm15_reg <= 32'h0;
+			w_tm16_reg <= 32'h0;
 		end else begin
+			current_state <= next_state;
 			case (current_state)
 				IDLE: begin
 					schedule_ready <= 1'b0;
@@ -404,7 +421,7 @@ module SHA256_Compression_Engine (
 );
 	// Internal states, registers, counters
 	reg [31:0] 	a, b, c, d, e, f, g, h;
-	reg [5:0]	round_counter;
+	reg [6:0]	round_counter;
 	wire [31:0]	constant_i;
 	wire [31:0]	weight_i;
 	wire [31:0]	a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out;
@@ -435,6 +452,7 @@ module SHA256_Compression_Engine (
 
 	always @(posedge clock or posedge reset) begin
 		if (reset) begin
+			final_hash <= 0;
 			{a, b, c, d, e, f, g, h} <= H0;
 			round_counter <= 0;
 			done <= 0;
@@ -471,8 +489,9 @@ module SHA256_Output_Handler (
 );
 
 	// Internal
-	reg [255:0] hash_buffer;
-	reg [4:0]	output_counter;
+	reg [255:0] hash_buffer = 256'b0;
+	reg [4:0]	output_counter = 0;
+	wire start = hash_ready;
 
 	always @(posedge clock or posedge reset) begin
 		if (reset) begin
@@ -481,15 +500,15 @@ module SHA256_Output_Handler (
 			output_counter <= 0;
 			done <= 0;
 		end else begin
-			if (hash_ready && output_counter == 0) begin
-				hash_buffer <= final_hash;
-				output_counter <= 16; 	// 256 bits / 16 = 16 steps
-				done <= 0;
+			if (start && !done && output_counter == 0) begin
+				hash_buffer = final_hash;
+				output_counter = 16;
+				done = 0;
 			end else if (output_counter > 0) begin
-				hashed_data <= hash_buffer[255:240];
-				hash_buffer <= {hash_buffer[239:0], 16'b0};
-				output_counter <= output_counter - 1;
-				if (output_counter == 1) done <= 1; // All words have been sent out
+				hashed_data = hash_buffer[255:240];
+				hash_buffer = {hash_buffer[239:0], 16'b0};
+				output_counter = output_counter - 1;
+				if (output_counter == 0) done <= 1; // All words have been sent out
 			end
 		end
 	end
