@@ -41,40 +41,6 @@ module SHA256_testbench;
 
         // Start loading the data
         load_enable = 1;
-        // projectfpga.com
-        input_data = 8'h70;
-        #10;
-        input_data = 8'h72;
-        #10;
-        input_data = 8'h6F;
-        #10;
-        input_data = 8'h6A;
-        #10;
-        input_data = 8'h65;
-        #10;
-        input_data = 8'h63;
-        #10;
-        input_data = 8'h74;
-        #10;
-        input_data = 8'h66;
-        #10;
-        input_data = 8'h70;
-        #10;
-        input_data = 8'h67;
-        #10;
-        input_data = 8'h61;
-        #10;
-        input_data = 8'h2E;
-        #10;
-        input_data = 8'h63;
-        #10;
-        input_data = 8'h6F;
-        #10;
-        input_data = 8'h6D;
-        #10;
-        input_complete = 1;
-        #10;
-        /*
         // send binary data (one clock cycle per byte)
         input_data = 8'h47; // 'G'
         #10; 
@@ -107,7 +73,7 @@ module SHA256_testbench;
         input_complete = 1;
         #10;
 
-        // TEST CASE TWO -- numeric sequence 
+        /*// TEST CASE TWO -- numeric sequence 
         initial begin
             # 150 // will start after test case 1 
             // reset the system 
@@ -129,7 +95,8 @@ module SHA256_testbench;
     wire done = dut.output_handler.done;
     always @(posedge clock) begin
         if (temp) begin
-            $display("Input String: 'projectfpga.com'");
+            $display("");
+            $display("Input String: Go Irish!");
             $write("Output:");
             temp <= 0;
         end if (ready && !done) begin
@@ -137,7 +104,8 @@ module SHA256_testbench;
         end else if (done) begin
             $write(" %h", hashed_data);
             $display("");
-            $display("Hashing Complete. Check waveform or print statements for final hash.");
+            $display("Hashing Complete. ");
+            $display("");
             $stop;
         end
     end
