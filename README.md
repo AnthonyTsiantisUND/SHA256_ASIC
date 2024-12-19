@@ -41,9 +41,9 @@ The first 16 words are directly from the padded message. All subsequent words ar
 
 #### Compression 
 Each round updates the variables `A` `B` `C` `D` `E` `F` `G` `H` using: 
-    * temporary variables
-    * boolean functions
-    * constants
+* temporary variables
+* boolean functions
+* constants
 
 ### Finite State Machine Representation 
 
