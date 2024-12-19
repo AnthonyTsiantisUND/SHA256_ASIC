@@ -129,7 +129,8 @@ module SHA256_testbench;
     always @(posedge clock) begin
         if (temp) begin
             $display("");
-            $display("Input String: Go Irish!");
+           // $display("Input String: Go Irish!");
+            $display("Input String: CSE30342");
             $write("Output Hash: ");
             temp <= 0;
         end if (ready && !done) begin
