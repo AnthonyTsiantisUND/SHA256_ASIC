@@ -47,4 +47,6 @@ Each round updates the variables `A` `B` `C` `D` `E` `F` `G` `H` using:
 
 ### Finite State Machine Representation 
 
+![IMG_5004](https://github.com/user-attachments/assets/892beab8-84c3-4bba-963d-575122c50a0a)
 
+![IMG_2012](https://github.com/user-attachments/assets/abbc6258-6fd1-46a0-baa8-7df7e9660140)
