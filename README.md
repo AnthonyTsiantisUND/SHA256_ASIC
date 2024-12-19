@@ -7,7 +7,7 @@ This project implements a Verilog design of the SHA256 Encryption algorithm tail
 
 ### Key Feautures
 * Input Handling - processes input byte-by-byte and pads for compatability, 
-* Message Scheduling - transformms a 512-bit block into 64 32-bit words
+* Message Scheduling - transforms a 512-bit block into 64 32-bit words
 * Compression Engine - performs the hashing operations 
 * Constants - use the first 32 bits of the fractional parts of cube roots of the first 64 prime numbers
 * Output Generation - produces the final hash in 16-bit segments 
@@ -18,6 +18,7 @@ This project implements a Verilog design of the SHA256 Encryption algorithm tail
 * `load_enable` -  signals the start of input loading
 * `input_complete` - indicates that input data is fully loaded
 * `input_data` - 8-bit input data stream
+NOTE: Input is limited to 440 bits (55 Bytes)!1
 
 ### Outputs
 * `hashed_data` - 16-bit segments of the final hashed output
